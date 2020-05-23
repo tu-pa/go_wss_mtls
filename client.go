@@ -1,24 +1,25 @@
 package main
 
 import (
-	//fmt"
+	"fmt"
 	"io/ioutil"
 	"log"
-	//"net/http"
 	"crypto/x509"
 	"crypto/tls"
 
 	"os"
 	"os/signal"
 	"flag"
+	"net"
 	"net/url"
 	"time"
+	"math/rand"
 
 	"github.com/gorilla/websocket"
 )
 
-var addr = flag.String("addr", "127.0.0.1:8443", "http service address")
-
+var serverAddr = flag.String("addr", "127.0.0.1:8443", "http service address")
+var udpPort = ":8444"
 func main() {
 	flag.Parse()
 	log.SetFlags(0)
@@ -40,7 +41,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	u := url.URL{Scheme: "wss", Host: *addr, Path: "/echo"}
+	u := url.URL{Scheme: "wss", Host: *serverAddr, Path: "/echo"}
 	log.Printf("connecting to %s", u.String())
 
 	wssDialer := websocket.DefaultDialer
@@ -69,19 +70,40 @@ func main() {
 		}
 	}()
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
+	// UDP Listen
+	s, err := net.ResolveUDPAddr("udp4", udpPort)
+	if err != nil {
+			fmt.Println(err)
+			return
+	}
+
+	udpCon, err := net.ListenUDP("udp4", s)
+	if err != nil {
+			fmt.Println(err)
+			return
+	}
+	defer udpCon.Close()
+	buffer := make([]byte, 1024)
+	rand.Seed(time.Now().Unix())
+
+	go func () {
+		defer close(done)
+		for {
+			udpCon.ReadFromUDP(buffer)
+			//fmt.Print("-> ", string(buffer[0:n-1]))
+			//case t := <-ticker.C:
+			err := c.WriteMessage(websocket.TextMessage, buffer)
+			if err != nil {
+				log.Println("write:", err)
+				return
+			}
+		}
+	} ()
 
 	for {
 		select {
 		case <-done:
 			return
-		case t := <-ticker.C:
-			err := c.WriteMessage(websocket.TextMessage, []byte(t.String()))
-			if err != nil {
-				log.Println("write:", err)
-				return
-			}
 		case <-interrupt:
 			log.Println("interrupt")
 

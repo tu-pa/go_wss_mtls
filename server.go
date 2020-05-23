@@ -4,11 +4,11 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"crypto/x509"
 	"crypto/tls"
 
-	"html/template"
 	"github.com/gorilla/websocket"
 )
 
@@ -25,8 +25,13 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		log.Print("upgrade:", err)
 		return
 	}
+
+	ip, port, err := net.SplitHostPort(r.RemoteAddr)
+	log.Print("connection from: ",ip,":",port)
+
 	defer c.Close()
 	for {
+		// Echo Loop
 		mt, message, err := c.ReadMessage()
 		if err != nil {
 			log.Println("read:", err)
@@ -40,6 +45,8 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 }
+
+var serverPort = ":8443"
 
 func main() {
 	// Set up a /hello resource handler
@@ -63,7 +70,7 @@ func main() {
 
 	// Create a Server instance to listen on port 8443 with the TLS config
 	server := &http.Server{
-		Addr:      ":8443",
+		Addr:      serverPort,
 		TLSConfig: tlsConfig,
 	}
 
