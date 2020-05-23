@@ -3,6 +3,8 @@ package main
 import (
 	"io"
 	"io/ioutil"
+	"os"
+	"os/signal"
 	"log"
 	"net"
 	"net/http"
@@ -46,9 +48,13 @@ func echo(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var serverPort = ":8443"
+var controlPort = ":8442"
+var dataPort = ":8443"
 
 func main() {
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt)
+
 	// Set up a /hello resource handler
 	http.HandleFunc("/hello", helloHandler)
 	http.HandleFunc("/echo", echo)
@@ -69,11 +75,43 @@ func main() {
 	tlsConfig.BuildNameToCertificate()
 
 	// Create a Server instance to listen on port 8443 with the TLS config
-	server := &http.Server{
-		Addr:      serverPort,
+	dataServer := &http.Server{
+		Addr:      dataPort,
+		TLSConfig: tlsConfig,
+	}
+
+	done := make(chan struct{})
+
+	// Listen to HTTPS connections with the server certificate and wait
+	go func(){
+		defer close(done)
+		log.Fatal(dataServer.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
+	}()
+
+	// Create a Server instance to listen on port 8443 with the TLS config
+	controlServer := &http.Server{
+		Addr:      controlPort,
 		TLSConfig: tlsConfig,
 	}
 
 	// Listen to HTTPS connections with the server certificate and wait
-	log.Fatal(server.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
+	go func(){
+		defer close(done)
+		log.Fatal(controlServer.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
+	}()
+
+	// Wait loop
+	for {
+		select {
+		case <-done:
+			return
+		case <-interrupt:
+			log.Println("interrupt")
+
+			select {
+			case <-done:
+			}
+			return
+		}
+	}
 }

@@ -18,8 +18,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var serverAddr = flag.String("addr", "127.0.0.1:8443", "http service address")
+var controlChannel = flag.String("caddr", "127.0.0.1:8442", "control channel")
+var dataChannel = flag.String("daddr", "127.0.0.1:8443", "data channel")
 var udpPort = ":8444"
+
 func main() {
 	flag.Parse()
 	log.SetFlags(0)
@@ -41,8 +43,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	u := url.URL{Scheme: "wss", Host: *serverAddr, Path: "/echo"}
-	log.Printf("connecting to %s", u.String())
+	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/echo"}
+	log.Printf("connecting control channel to %s", ccUrl.String())
+	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/echo"}
+	log.Printf("connecting data channel to %s", dcUrl.String())
 
 	wssDialer := websocket.DefaultDialer
 	wssDialer.TLSClientConfig = &tls.Config{
@@ -50,18 +54,38 @@ func main() {
 		Certificates: []tls.Certificate{cert},
 	}
 
-	c, _, err := wssDialer.Dial(u.String(), nil)
+	cc, _, err := wssDialer.Dial(ccUrl.String(), nil)
 	if err != nil {
 		log.Fatal("dial:", err)
 	}
-	defer c.Close()
+	defer cc.Close()
 
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
 		for {
-			_, message, err := c.ReadMessage()
+			// TODO - Server Control
+			_, message, err := cc.ReadMessage()
+			if err != nil {
+				log.Println("read:", err)
+				return
+			}
+			log.Printf("recv: %s", message)
+		}
+	}()
+
+	dc, _, err := wssDialer.Dial(dcUrl.String(), nil)
+	if err != nil {
+		log.Fatal("dial:", err)
+	}
+	defer dc.Close()
+
+	go func() {
+		defer close(done)
+		for {
+			// TODO - Data Channel
+			_, message, err := dc.ReadMessage()
 			if err != nil {
 				log.Println("read:", err)
 				return
@@ -92,7 +116,7 @@ func main() {
 			udpCon.ReadFromUDP(buffer)
 			//fmt.Print("-> ", string(buffer[0:n-1]))
 			//case t := <-ticker.C:
-			err := c.WriteMessage(websocket.TextMessage, buffer)
+			err := dc.WriteMessage(websocket.TextMessage, buffer)
 			if err != nil {
 				log.Println("write:", err)
 				return
@@ -109,11 +133,18 @@ func main() {
 
 			// Cleanly close the connection by sending a close message and then
 			// waiting (with timeout) for the server to close the connection.
-			err := c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			err := cc.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			if err != nil {
 				log.Println("write close:", err)
 				return
 			}
+
+			err = dc.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			if err != nil {
+				log.Println("write close:", err)
+				return
+			}
+
 			select {
 			case <-done:
 			case <-time.After(time.Second):
