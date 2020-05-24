@@ -43,9 +43,9 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/echo"}
+	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/control"}
 	log.Printf("connecting control channel to %s", ccUrl.String())
-	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/echo"}
+	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/control"}
 	log.Printf("connecting data channel to %s", dcUrl.String())
 
 	wssDialer := websocket.DefaultDialer
