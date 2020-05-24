@@ -1,12 +1,13 @@
 package main
 
 import (
-	"io"
+	"fmt"
+	//"io"
 	"io/ioutil"
-	"os"
-	"os/signal"
+	//os"
+	//"os/signal"
 	"log"
-	"net"
+	//"net"
 	"net/http"
 	"crypto/x509"
 	"crypto/tls"
@@ -14,33 +15,115 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-func helloHandler(w http.ResponseWriter, r *http.Request) {
-	// Write "Hello, world!" to the response body
-	io.WriteString(w, "Hello, world!\n")
+// Control Channel Request/Response //
+var reqid_start_service = "start_service"
+var reqid_stop_service = "stop_service"
+var reqid_get_avail_clients = "get_available_clients"
+var reqid_get_client_statistics = "get_client_statistics"
+var reqid_get_client_ip_addr = "get_client_ip_addr"
+var reqid_start_client_data_test = "start_data_test"
+var reqid_stop_client_data_test = "stop_get_data_test"
+
+type Request struct {
+	reqId string
+	clientId string
 }
 
-var upgrader = websocket.Upgrader{} // use default options
+type Response struct {
+	reqId string
+	result string
+	data string
+	clients []string
+}
+/////////////////////////////////////
 
-func echo(w http.ResponseWriter, r *http.Request) {
-	c, err := upgrader.Upgrade(w, r, nil)
+type Client struct {
+    id   string
+    Conn *websocket.Conn
+    Pool *Pool
+}
+
+type Pool struct {
+    Register   chan *Client
+    Unregister chan *Client
+	Clients    map[*Client]bool
+	Broadcast  chan *Request
+}
+
+func NewPool() *Pool {
+    return &Pool{
+        Register:   make(chan *Client),
+        Unregister: make(chan *Client),
+		Clients:    make(map[*Client]bool),
+		Broadcast:  make(chan *Request),
+    }
+}
+
+func (pool *Pool) Start() {
+    for {
+        select {
+        case client := <-pool.Register:
+            pool.Clients[client] = true
+            fmt.Println("Size of Connection Pool: ", len(pool.Clients))
+            for client, _ := range pool.Clients {
+                fmt.Println(client)
+                //client.Conn.WriteJSON(Message{Type: 1, Body: "New User Joined..."})
+            }
+            break
+        case client := <-pool.Unregister:
+            delete(pool.Clients, client)
+            fmt.Println("Size of Connection Pool: ", len(pool.Clients))
+            for client, _ := range pool.Clients {
+				fmt.Println(client)
+                //client.Conn.WriteJSON(Message{Type: 1, Body: "User Disconnected..."})
+            }
+			break
+		case message := <-pool.Broadcast:
+            fmt.Println("Sending message to all clients in Pool")
+            for client, _ := range pool.Clients {
+                if err := client.Conn.WriteJSON(message); err != nil {
+                    fmt.Println(err)
+                    return
+                }
+            }
+		}
+    }
+}
+
+var upgrader = websocket.Upgrader{
+    ReadBufferSize:  1024,
+    WriteBufferSize: 1024,
+    CheckOrigin: func(r *http.Request) bool { return true },
+}
+
+func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
 		return
 	}
 
-	ip, port, err := net.SplitHostPort(r.RemoteAddr)
-	log.Print("connection from: ",ip,":",port)
+    client := &Client{
+        Conn: conn,
+        Pool: pool,
+	}
 
-	defer c.Close()
+	pool.Register <- client
+
+	defer func() {
+        client.Pool.Unregister <- client
+        client.Conn.Close()
+	}()
+
 	for {
-		// Echo Loop
-		mt, message, err := c.ReadMessage()
+		// TODO - Control Loop
+		mt, message, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("read:", err)
 			break
 		}
 		log.Printf("recv: %s", message)
-		err = c.WriteMessage(mt, message)
+		err = conn.WriteMessage(mt, message)
 		if err != nil {
 			log.Println("write:", err)
 			break
@@ -50,14 +133,33 @@ func echo(w http.ResponseWriter, r *http.Request) {
 
 var controlPort = ":8442"
 var dataPort = ":8443"
+var webserverPort = ":8444"
 
 func main() {
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt)
 
-	// Set up a /hello resource handler
-	http.HandleFunc("/hello", helloHandler)
-	http.HandleFunc("/echo", echo)
+	pool := NewPool()
+    go pool.Start()
+
+	// Set up a resource handler
+	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
+        control(pool, w, r)
+	})
+
+	// Local Webserver Feature List
+	// Start Client Service
+	// - Client Response Ok/Fail
+	// Stop Client Service
+	// - Client Response Ok/Fail
+	// Get Available Clients
+	// - Server Response List of Clients
+	// Get Client Statistics
+	// - Client Response Data or Fail
+	// Get Client IP Address
+	// - Client Response with IP Address or Fail
+	// Start Client Data Test
+	// - Client Response Ok/Fail
+	// Stop/Get Client Data Test
+	// - Client Response Ok/Fail
 
 	// Create a CA certificate pool and add cert.pem to it
 	caCert, err := ioutil.ReadFile("certs/cert.pem")
@@ -100,17 +202,15 @@ func main() {
 		log.Fatal(controlServer.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
 	}()
 
-	// Wait loop
-	for {
+	webserver := &http.Server{Addr: webserverPort}
+	go func(){
+		defer close(done)
+		log.Fatal(webserver.ListenAndServe())
+	}()
+
+    for {
 		select {
 		case <-done:
-			return
-		case <-interrupt:
-			log.Println("interrupt")
-
-			select {
-			case <-done:
-			}
 			return
 		}
 	}
