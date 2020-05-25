@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	//"io"
 	"io/ioutil"
@@ -16,33 +17,14 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+
+	"../common"
 )
-
-// Control Channel Request/Response //
-var reqid_start_service = "start_service"
-var reqid_stop_service = "stop_service"
-var reqid_get_avail_clients = "get_available_clients"
-var reqid_get_client_statistics = "get_client_statistics"
-var reqid_get_client_ip_addr = "get_client_ip_addr"
-var reqid_start_client_data_test = "start_data_test"
-var reqid_stop_client_data_test = "stop_get_data_test"
-
-type Request struct {
-	reqId    string
-	clientId string
-}
-
-type Response struct {
-	reqId   string
-	result  string
-	data    string
-	clients []string
-}
 
 /////////////////////////////////////
 
 type Client struct {
-	id   string
+	Id   string
 	Conn *websocket.Conn
 	Pool *Pool
 }
@@ -50,16 +32,16 @@ type Client struct {
 type Pool struct {
 	Register   chan *Client
 	Unregister chan *Client
-	Clients    map[*Client]bool
-	Broadcast  chan *Request
+	Clients    map[string]*Client
+	Broadcast  chan *common.Request
 }
 
 func NewPool() *Pool {
 	return &Pool{
 		Register:   make(chan *Client),
 		Unregister: make(chan *Client),
-		Clients:    make(map[*Client]bool),
-		Broadcast:  make(chan *Request),
+		Clients:    make(map[string]*Client),
+		Broadcast:  make(chan *common.Request),
 	}
 }
 
@@ -67,7 +49,7 @@ func (pool *Pool) Start() {
 	for {
 		select {
 		case client := <-pool.Register:
-			pool.Clients[client] = true
+			pool.Clients[client.Id] = client
 			fmt.Println("Size of Connection Pool: ", len(pool.Clients))
 			for client, _ := range pool.Clients {
 				fmt.Println(client)
@@ -75,7 +57,7 @@ func (pool *Pool) Start() {
 			}
 			break
 		case client := <-pool.Unregister:
-			delete(pool.Clients, client)
+			delete(pool.Clients, client.Id)
 			fmt.Println("Size of Connection Pool: ", len(pool.Clients))
 			for client, _ := range pool.Clients {
 				fmt.Println(client)
@@ -84,7 +66,7 @@ func (pool *Pool) Start() {
 			break
 		case message := <-pool.Broadcast:
 			fmt.Println("Sending message to all clients in Pool")
-			for client, _ := range pool.Clients {
+			for _, client := range pool.Clients {
 				if err := client.Conn.WriteJSON(message); err != nil {
 					fmt.Println(err)
 					return
@@ -100,6 +82,8 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
+var done = make(chan struct{})
+
 func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -107,8 +91,12 @@ func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create ID from Remote Address
+	var s = strings.ReplaceAll(r.RemoteAddr, ".", "")
+	s = strings.ReplaceAll(s, ":", "")
+
 	client := &Client{
-		id:   r.RemoteAddr,
+		Id:   s,
 		Conn: conn,
 		Pool: pool,
 	}
@@ -121,38 +109,80 @@ func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		// TODO - Control Loop
-		mt, message, err := conn.ReadMessage()
-		if err != nil {
-			log.Println("read:", err)
-			break
-		}
-		log.Printf("recv: %s", message)
-		err = conn.WriteMessage(mt, message)
-		if err != nil {
-			log.Println("write:", err)
-			break
+		select {
+		case <-done:
+			return
 		}
 	}
 }
 
-func startService(w http.ResponseWriter, r *http.Request) {
+func startService(client *Client, w http.ResponseWriter, r *http.Request) {
+	if client == nil {
+		resp := common.Response{
+			ReqId:  "startService",
+			Result: "invalid client error",
+		}
 
+		log.Println("invalid client: ", resp)
+
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	log.Println("Request startService Client: ", client)
+
+	msg, _ := json.Marshal(common.Request{ReqId: common.Reqid_start_service})
+	err := client.Conn.WriteMessage(websocket.TextMessage, msg)
+	if err != nil {
+		log.Println("write:", err)
+		return
+	}
+
+	_, message, err := client.Conn.ReadMessage()
+	if err != nil {
+		log.Println("read:", err)
+		return
+	}
+	log.Printf("client response: %s", message)
+
+	resp := &common.Response{
+		ReqId:  "",
+		Result: "",
+	}
+	json.Unmarshal([]byte(message), resp)
+
+	json.NewEncoder(w).Encode(resp)
 }
 
-func stopService(w http.ResponseWriter, r *http.Request) {
+func stopService(client *Client, w http.ResponseWriter, r *http.Request) {
+	if client == nil {
+		resp := common.Response{
+			ReqId:  "stopService",
+			Result: "invalid client error",
+		}
 
+		log.Println("invalid client: ", resp)
+
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	log.Println("Request stopService Client: ", client)
+
+	m := make(map[string]bool)
+	m[client.Id] = true
+	json.NewEncoder(w).Encode(m)
 }
 
 func getAvailClients(pool *Pool, w http.ResponseWriter, r *http.Request) {
 
+	log.Println("Clients: ", pool.Clients)
+
 	m := make(map[string]bool)
 
-	for k, _ := range pool.Clients {
-		m[k.id] = true
+	for client := range pool.Clients {
+		m[client] = true
 	}
-
-	log.Println("Clients: ", m)
 
 	json.NewEncoder(w).Encode(m)
 }
@@ -208,8 +238,6 @@ func main() {
 		TLSConfig: tlsConfig,
 	}
 
-	done := make(chan struct{})
-
 	// Set up a resource handler
 	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		control(pool, w, r)
@@ -237,8 +265,16 @@ func main() {
 	router.HandleFunc("/available_clients", func(w http.ResponseWriter, r *http.Request) {
 		getAvailClients(pool, w, r)
 	}).Methods("GET")
-	router.HandleFunc("/start_service/{id}", startService).Methods("POST")
-	router.HandleFunc("/stop_service/{id}", stopService).Methods("POST")
+	router.HandleFunc("/start_service/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := mux.Vars(r)["id"]
+		client := pool.Clients[id]
+		startService(client, w, r)
+	}).Methods("GET")
+	router.HandleFunc("/stop_service/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := mux.Vars(r)["id"]
+		client := pool.Clients[id]
+		stopService(client, w, r)
+	}).Methods("GET")
 
 	go func() {
 		defer close(done)
