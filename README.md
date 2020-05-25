@@ -3,6 +3,7 @@ Example of mutually authenticated TLS/SSL TCP connection
 
 Dependencies on gorilla websockets:
 <code> go get github.com/gorilla/websocket </code>
+<code> go get github.com/gorilla/mux </code>
 
 Run echo server:
 <code> go run -v server.go </code>
