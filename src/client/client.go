@@ -1,21 +1,24 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"log"
-	"crypto/x509"
-	"crypto/tls"
 
-	"os"
-	"os/signal"
 	"flag"
+	"math/rand"
 	"net"
 	"net/url"
+	"os"
+	"os/signal"
 	"time"
-	"math/rand"
 
 	"github.com/gorilla/websocket"
+
+	"../common"
 )
 
 var controlChannel = flag.String("caddr", "127.0.0.1:8442", "control channel")
@@ -24,7 +27,7 @@ var udpPort = ":8444"
 
 func main() {
 	flag.Parse()
-	log.SetFlags(0)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
@@ -50,7 +53,7 @@ func main() {
 
 	wssDialer := websocket.DefaultDialer
 	wssDialer.TLSClientConfig = &tls.Config{
-		RootCAs: caCertPool,
+		RootCAs:      caCertPool,
 		Certificates: []tls.Certificate{cert},
 	}
 
@@ -72,6 +75,31 @@ func main() {
 				return
 			}
 			log.Printf("recv: %s", message)
+
+			req := &common.Request{
+				ReqId: "",
+			}
+
+			resp := &common.Response{
+				ReqId:  "",
+				Result: "",
+			}
+
+			json.Unmarshal([]byte(message), req)
+
+			// TODO - Fulfil request
+
+			resp.ReqId = req.ReqId
+			resp.Result = "ok"
+
+			respMsg, _ := json.Marshal(resp)
+
+			err = cc.WriteMessage(websocket.TextMessage, respMsg)
+			if err != nil {
+				log.Println("write:", err)
+				return
+			}
+
 		}
 	}()
 
@@ -97,20 +125,20 @@ func main() {
 	// UDP Listen
 	s, err := net.ResolveUDPAddr("udp4", udpPort)
 	if err != nil {
-			fmt.Println(err)
-			return
+		fmt.Println(err)
+		return
 	}
 
 	udpCon, err := net.ListenUDP("udp4", s)
 	if err != nil {
-			fmt.Println(err)
-			return
+		fmt.Println(err)
+		return
 	}
 	defer udpCon.Close()
 	buffer := make([]byte, 1024)
 	rand.Seed(time.Now().Unix())
 
-	go func () {
+	go func() {
 		defer close(done)
 		for {
 			udpCon.ReadFromUDP(buffer)
@@ -122,7 +150,7 @@ func main() {
 				return
 			}
 		}
-	} ()
+	}()
 
 	for {
 		select {
