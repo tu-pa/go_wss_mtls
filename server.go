@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+
 	//"io"
 	"io/ioutil"
 	//os"
 	//"os/signal"
 	"log"
 	//"net"
-	"net/http"
-	"crypto/x509"
 	"crypto/tls"
+	"crypto/x509"
+	"net/http"
 
+	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
 )
 
@@ -25,75 +28,76 @@ var reqid_start_client_data_test = "start_data_test"
 var reqid_stop_client_data_test = "stop_get_data_test"
 
 type Request struct {
-	reqId string
+	reqId    string
 	clientId string
 }
 
 type Response struct {
-	reqId string
-	result string
-	data string
+	reqId   string
+	result  string
+	data    string
 	clients []string
 }
+
 /////////////////////////////////////
 
 type Client struct {
-    id   string
-    Conn *websocket.Conn
-    Pool *Pool
+	id   string
+	Conn *websocket.Conn
+	Pool *Pool
 }
 
 type Pool struct {
-    Register   chan *Client
-    Unregister chan *Client
+	Register   chan *Client
+	Unregister chan *Client
 	Clients    map[*Client]bool
 	Broadcast  chan *Request
 }
 
 func NewPool() *Pool {
-    return &Pool{
-        Register:   make(chan *Client),
-        Unregister: make(chan *Client),
+	return &Pool{
+		Register:   make(chan *Client),
+		Unregister: make(chan *Client),
 		Clients:    make(map[*Client]bool),
 		Broadcast:  make(chan *Request),
-    }
+	}
 }
 
 func (pool *Pool) Start() {
-    for {
-        select {
-        case client := <-pool.Register:
-            pool.Clients[client] = true
-            fmt.Println("Size of Connection Pool: ", len(pool.Clients))
-            for client, _ := range pool.Clients {
-                fmt.Println(client)
-                //client.Conn.WriteJSON(Message{Type: 1, Body: "New User Joined..."})
-            }
-            break
-        case client := <-pool.Unregister:
-            delete(pool.Clients, client)
-            fmt.Println("Size of Connection Pool: ", len(pool.Clients))
-            for client, _ := range pool.Clients {
+	for {
+		select {
+		case client := <-pool.Register:
+			pool.Clients[client] = true
+			fmt.Println("Size of Connection Pool: ", len(pool.Clients))
+			for client, _ := range pool.Clients {
 				fmt.Println(client)
-                //client.Conn.WriteJSON(Message{Type: 1, Body: "User Disconnected..."})
-            }
+				//client.Conn.WriteJSON(Message{Type: 1, Body: "New User Joined..."})
+			}
+			break
+		case client := <-pool.Unregister:
+			delete(pool.Clients, client)
+			fmt.Println("Size of Connection Pool: ", len(pool.Clients))
+			for client, _ := range pool.Clients {
+				fmt.Println(client)
+				//client.Conn.WriteJSON(Message{Type: 1, Body: "User Disconnected..."})
+			}
 			break
 		case message := <-pool.Broadcast:
-            fmt.Println("Sending message to all clients in Pool")
-            for client, _ := range pool.Clients {
-                if err := client.Conn.WriteJSON(message); err != nil {
-                    fmt.Println(err)
-                    return
-                }
-            }
+			fmt.Println("Sending message to all clients in Pool")
+			for client, _ := range pool.Clients {
+				if err := client.Conn.WriteJSON(message); err != nil {
+					fmt.Println(err)
+					return
+				}
+			}
 		}
-    }
+	}
 }
 
 var upgrader = websocket.Upgrader{
-    ReadBufferSize:  1024,
-    WriteBufferSize: 1024,
-    CheckOrigin: func(r *http.Request) bool { return true },
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
@@ -103,16 +107,17 @@ func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-    client := &Client{
-        Conn: conn,
-        Pool: pool,
+	client := &Client{
+		id:   r.RemoteAddr,
+		Conn: conn,
+		Pool: pool,
 	}
 
 	pool.Register <- client
 
 	defer func() {
-        client.Pool.Unregister <- client
-        client.Conn.Close()
+		client.Pool.Unregister <- client
+		client.Conn.Close()
 	}()
 
 	for {
@@ -131,19 +136,40 @@ func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func startService(w http.ResponseWriter, r *http.Request) {
+
+}
+
+func stopService(w http.ResponseWriter, r *http.Request) {
+
+}
+
+func getAvailClients(pool *Pool, w http.ResponseWriter, r *http.Request) {
+
+	m := make(map[string]bool)
+
+	for k, _ := range pool.Clients {
+		m[k.id] = true
+	}
+
+	log.Println("Clients: ", m)
+
+	json.NewEncoder(w).Encode(m)
+}
+
+// secure ports
 var controlPort = ":8442"
 var dataPort = ":8443"
+
+// non-secure ports
 var webserverPort = ":8444"
 
 func main() {
 
-	pool := NewPool()
-    go pool.Start()
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	// Set up a resource handler
-	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
-        control(pool, w, r)
-	})
+	pool := NewPool()
+	go pool.Start()
 
 	// Local Webserver Feature List
 	// Start Client Service
@@ -171,7 +197,7 @@ func main() {
 
 	// Create the TLS Config with the CA pool and enable Client certificate validation
 	tlsConfig := &tls.Config{
-		ClientCAs: caCertPool,
+		ClientCAs:  caCertPool,
 		ClientAuth: tls.RequireAndVerifyClientCert,
 	}
 	tlsConfig.BuildNameToCertificate()
@@ -184,8 +210,13 @@ func main() {
 
 	done := make(chan struct{})
 
+	// Set up a resource handler
+	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
+		control(pool, w, r)
+	})
+
 	// Listen to HTTPS connections with the server certificate and wait
-	go func(){
+	go func() {
 		defer close(done)
 		log.Fatal(dataServer.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
 	}()
@@ -197,18 +228,24 @@ func main() {
 	}
 
 	// Listen to HTTPS connections with the server certificate and wait
-	go func(){
+	go func() {
 		defer close(done)
 		log.Fatal(controlServer.ListenAndServeTLS("certs/cert.pem", "certs/key.pem"))
 	}()
 
-	webserver := &http.Server{Addr: webserverPort}
-	go func(){
+	router := mux.NewRouter().StrictSlash(true)
+	router.HandleFunc("/available_clients", func(w http.ResponseWriter, r *http.Request) {
+		getAvailClients(pool, w, r)
+	}).Methods("GET")
+	router.HandleFunc("/start_service/{id}", startService).Methods("POST")
+	router.HandleFunc("/stop_service/{id}", stopService).Methods("POST")
+
+	go func() {
 		defer close(done)
-		log.Fatal(webserver.ListenAndServe())
+		log.Fatal(http.ListenAndServe(webserverPort, router))
 	}()
 
-    for {
+	for {
 		select {
 		case <-done:
 			return
