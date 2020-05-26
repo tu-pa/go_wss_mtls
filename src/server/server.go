@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	//"io"
 	"io/ioutil"
@@ -24,9 +25,10 @@ import (
 /////////////////////////////////////
 
 type Client struct {
-	Id   string
-	Conn *websocket.Conn
-	Pool *Pool
+	Id     string
+	Joined string
+	Conn   *websocket.Conn
+	Pool   *Pool
 }
 
 type Pool struct {
@@ -49,6 +51,8 @@ func (pool *Pool) Start() {
 	for {
 		select {
 		case client := <-pool.Register:
+			t := time.Now()
+			client.Joined = t.Format(time.StampMilli)
 			pool.Clients[client.Id] = client
 			fmt.Println("Size of Connection Pool: ", len(pool.Clients))
 			for client, _ := range pool.Clients {
@@ -83,8 +87,9 @@ var upgrader = websocket.Upgrader{
 }
 
 var done = make(chan struct{})
+var respCh = make(chan string)
 
-func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
+func connect(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("upgrade:", err)
@@ -109,10 +114,47 @@ func control(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	}()
 
 	for {
-		select {
-		case <-done:
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			log.Println("read:", err)
 			return
 		}
+		log.Printf("client response: %s", message)
+		respCh <- string(message)
+	}
+}
+
+func data(pool *Pool, w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Print("upgrade:", err)
+		return
+	}
+
+	// Create ID from Remote Address
+	var s = strings.ReplaceAll(r.RemoteAddr, ".", "")
+	s = strings.ReplaceAll(s, ":", "")
+
+	client := &Client{
+		Id:   s,
+		Conn: conn,
+		Pool: pool,
+	}
+
+	pool.Register <- client
+
+	defer func() {
+		client.Pool.Unregister <- client
+		client.Conn.Close()
+	}()
+
+	for {
+		_, message, err := conn.ReadMessage()
+		if err != nil {
+			log.Println("read:", err)
+			return
+		}
+		log.Printf("TODO: Route Client data: %s", message)
 	}
 }
 
@@ -138,20 +180,17 @@ func startService(client *Client, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, message, err := client.Conn.ReadMessage()
-	if err != nil {
-		log.Println("read:", err)
-		return
-	}
-	log.Printf("client response: %s", message)
+	// Wait for Response
+	select {
+	case message := <-respCh:
+		resp := &common.Response{
+			ReqId:  "",
+			Result: "",
+		}
+		json.Unmarshal([]byte(message), resp)
 
-	resp := &common.Response{
-		ReqId:  "",
-		Result: "",
+		json.NewEncoder(w).Encode(resp)
 	}
-	json.Unmarshal([]byte(message), resp)
-
-	json.NewEncoder(w).Encode(resp)
 }
 
 func stopService(client *Client, w http.ResponseWriter, r *http.Request) {
@@ -169,20 +208,41 @@ func stopService(client *Client, w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Request stopService Client: ", client)
 
-	m := make(map[string]bool)
-	m[client.Id] = true
-	json.NewEncoder(w).Encode(m)
+	msg, _ := json.Marshal(common.Request{ReqId: common.Reqid_stop_service})
+	err := client.Conn.WriteMessage(websocket.TextMessage, msg)
+	if err != nil {
+		log.Println("write:", err)
+		return
+	}
+
+	// Wait for Response
+	select {
+	case message := <-respCh:
+		resp := &common.Response{
+			ReqId:  "",
+			Result: "",
+		}
+		json.Unmarshal([]byte(message), resp)
+
+		json.NewEncoder(w).Encode(resp)
+	}
 }
 
 func getAvailClients(pool *Pool, w http.ResponseWriter, r *http.Request) {
 
-	log.Println("Clients: ", pool.Clients)
-
-	m := make(map[string]bool)
+	m := []struct {
+		Id     string
+		Joined string
+	}{}
 
 	for client := range pool.Clients {
-		m[client] = true
+		m = append(m, struct {
+			Id     string
+			Joined string
+		}{Id: client, Joined: pool.Clients[client].Joined})
 	}
+
+	log.Println("Clients: ", m)
 
 	json.NewEncoder(w).Encode(m)
 }
@@ -198,8 +258,10 @@ func main() {
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
-	pool := NewPool()
-	go pool.Start()
+	ctrlPool := NewPool()
+	go ctrlPool.Start()
+	dataPool := NewPool()
+	go dataPool.Start()
 
 	// Local Webserver Feature List
 	// Start Client Service
@@ -239,8 +301,12 @@ func main() {
 	}
 
 	// Set up a resource handler
-	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
-		control(pool, w, r)
+	http.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
+		connect(ctrlPool, w, r)
+	})
+
+	http.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
+		connect(dataPool, w, r)
 	})
 
 	// Listen to HTTPS connections with the server certificate and wait
@@ -263,16 +329,16 @@ func main() {
 
 	router := mux.NewRouter().StrictSlash(true)
 	router.HandleFunc("/available_clients", func(w http.ResponseWriter, r *http.Request) {
-		getAvailClients(pool, w, r)
+		getAvailClients(ctrlPool, w, r)
 	}).Methods("GET")
 	router.HandleFunc("/start_service/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
-		client := pool.Clients[id]
+		client := ctrlPool.Clients[id]
 		startService(client, w, r)
 	}).Methods("GET")
 	router.HandleFunc("/stop_service/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id := mux.Vars(r)["id"]
-		client := pool.Clients[id]
+		client := ctrlPool.Clients[id]
 		stopService(client, w, r)
 	}).Methods("GET")
 

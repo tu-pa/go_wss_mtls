@@ -32,6 +32,7 @@ func main() {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
+	//// Secure Websocket Setup: 2-Way Auth ////
 	// Create a CA certificate pool and add cert.pem to it
 	caCert, err := ioutil.ReadFile("certs/cert.pem")
 	if err != nil {
@@ -46,16 +47,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/control"}
-	log.Printf("connecting control channel to %s", ccUrl.String())
-	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/control"}
-	log.Printf("connecting data channel to %s", dcUrl.String())
-
 	wssDialer := websocket.DefaultDialer
 	wssDialer.TLSClientConfig = &tls.Config{
 		RootCAs:      caCertPool,
 		Certificates: []tls.Certificate{cert},
 	}
+
+	//// Control Channel Setup ////
+	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/connect"}
+	log.Printf("connecting control channel to %s", ccUrl.String())
 
 	cc, _, err := wssDialer.Dial(ccUrl.String(), nil)
 	if err != nil {
@@ -71,7 +71,7 @@ func main() {
 			// TODO - Server Control
 			_, message, err := cc.ReadMessage()
 			if err != nil {
-				log.Println("read:", err)
+				log.Println(err)
 				return
 			}
 			log.Printf("recv: %s", message)
@@ -80,17 +80,26 @@ func main() {
 				ReqId: "",
 			}
 
+			json.Unmarshal([]byte(message), req)
+
+			// TOOD
+			log.Println("TODO: Request: ", req.ReqId)
+
 			resp := &common.Response{
 				ReqId:  "",
 				Result: "",
 			}
-
-			json.Unmarshal([]byte(message), req)
-
-			// TODO - Fulfil request
-
 			resp.ReqId = req.ReqId
-			resp.Result = "ok"
+
+			if req.ReqId == common.Reqid_start_service {
+				// TODO: systemctl start clientService ?
+				resp.Result = "ok"
+			} else if req.ReqId == common.Reqid_stop_service {
+				// TODO: systemctl stop clientService ?
+				resp.Result = "ok"
+			} else {
+				resp.Result = "unhandled event"
+			}
 
 			respMsg, _ := json.Marshal(resp)
 
@@ -103,22 +112,27 @@ func main() {
 		}
 	}()
 
-	dc, _, err := wssDialer.Dial(dcUrl.String(), nil)
+	//// Data Channel Setup ////
+	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/data"}
+	log.Printf("connecting data channel to %s", dcUrl.String())
+
+	dcConn, _, err := wssDialer.Dial(dcUrl.String(), nil)
 	if err != nil {
 		log.Fatal("dial:", err)
+		return
 	}
-	defer dc.Close()
+	defer dcConn.Close()
 
 	go func() {
 		defer close(done)
 		for {
 			// TODO - Data Channel
-			_, message, err := dc.ReadMessage()
+			_, message, err := dcConn.ReadMessage()
 			if err != nil {
 				log.Println("read:", err)
 				return
 			}
-			log.Printf("recv: %s", message)
+			log.Printf("TODO: Data Channel recv: %s", message)
 		}
 	}()
 
@@ -134,17 +148,17 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	defer udpCon.Close()
-	buffer := make([]byte, 1024)
-	rand.Seed(time.Now().Unix())
 
 	go func() {
+		defer udpCon.Close()
+		buffer := make([]byte, 1024)
+		rand.Seed(time.Now().Unix())
+
 		defer close(done)
 		for {
 			udpCon.ReadFromUDP(buffer)
-			//fmt.Print("-> ", string(buffer[0:n-1]))
-			//case t := <-ticker.C:
-			err := dc.WriteMessage(websocket.TextMessage, buffer)
+
+			err := dcConn.WriteMessage(websocket.TextMessage, buffer)
 			if err != nil {
 				log.Println("write:", err)
 				return
@@ -163,13 +177,15 @@ func main() {
 			// waiting (with timeout) for the server to close the connection.
 			err := cc.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			if err != nil {
-				log.Println("write close:", err)
+				log.Println(err)
 				return
+			} else {
+				log.Println("closed")
 			}
 
-			err = dc.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			err = dcConn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 			if err != nil {
-				log.Println("write close:", err)
+				log.Println(err)
 				return
 			}
 
