@@ -6,14 +6,10 @@ import (
 	"strings"
 	"time"
 
-	//"io"
-	"io/ioutil"
-	//os"
-	//"os/signal"
-	"log"
-	//"net"
 	"crypto/tls"
 	"crypto/x509"
+	"io/ioutil"
+	"log"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -87,7 +83,8 @@ var upgrader = websocket.Upgrader{
 }
 
 var done = make(chan struct{})
-var respCh = make(chan string)
+var startServiceCh = make(chan common.Response)
+var stopServiceCh = make(chan common.Response)
 
 func connect(pool *Pool, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -120,7 +117,17 @@ func connect(pool *Pool, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		log.Printf("client response: %s", message)
-		respCh <- string(message)
+		resp := common.Response{
+			ReqId:  "",
+			Result: "",
+		}
+		json.Unmarshal(message, &resp)
+
+		if resp.ReqId == common.Reqid_start_service {
+			startServiceCh <- resp
+		} else if resp.ReqId == common.Reqid_stop_service {
+			stopServiceCh <- resp
+		}
 	}
 }
 
@@ -182,14 +189,8 @@ func startService(client *Client, w http.ResponseWriter, r *http.Request) {
 
 	// Wait for Response
 	select {
-	case message := <-respCh:
-		resp := &common.Response{
-			ReqId:  "",
-			Result: "",
-		}
-		json.Unmarshal([]byte(message), resp)
-
-		json.NewEncoder(w).Encode(resp)
+	case message := <-startServiceCh:
+		json.NewEncoder(w).Encode(message)
 	}
 }
 
@@ -217,14 +218,8 @@ func stopService(client *Client, w http.ResponseWriter, r *http.Request) {
 
 	// Wait for Response
 	select {
-	case message := <-respCh:
-		resp := &common.Response{
-			ReqId:  "",
-			Result: "",
-		}
-		json.Unmarshal([]byte(message), resp)
-
-		json.NewEncoder(w).Encode(resp)
+	case message := <-stopServiceCh:
+		json.NewEncoder(w).Encode(message)
 	}
 }
 
