@@ -8,7 +8,6 @@ import (
 	"io/ioutil"
 	"log"
 
-	"flag"
 	"math/rand"
 	"net"
 	"net/url"
@@ -21,20 +20,29 @@ import (
 	"../common"
 )
 
-var controlChannel = flag.String("caddr", "127.0.0.1:8442", "control channel")
-var dataChannel = flag.String("daddr", "127.0.0.1:8443", "data channel")
+// Default
+var controlChannel = "127.0.0.1:8442"
+var dataChannel = "127.0.0.1:8443"
 var udpPort = ":8444"
 
 func main() {
-	flag.Parse()
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, os.Interrupt)
 
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// Read Configuration
+	file, _ := ioutil.ReadFile("./client.conf")
+	conf := common.Config{}
+	_ = json.Unmarshal([]byte(file), &conf)
+
+	udpPort = conf.LocalUdpPort
+	controlChannel = conf.RemoteCtrlUrl
+	dataChannel = conf.RemoteDataUrl
+
 	//// Secure Websocket Setup: 2-Way Auth ////
 	// Create a CA certificate pool and add cert.pem to it
-	caCert, err := ioutil.ReadFile("certs/cert.pem")
+	caCert, err := ioutil.ReadFile(conf.Certs.RootPubKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,7 +50,7 @@ func main() {
 	caCertPool.AppendCertsFromPEM(caCert)
 
 	// Read the key pair to create certificate
-	cert, err := tls.LoadX509KeyPair("certs/cert.pem", "certs/key.pem")
+	cert, err := tls.LoadX509KeyPair(conf.Certs.RootPubKey, conf.Certs.PrivKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -54,7 +62,7 @@ func main() {
 	}
 
 	//// Control Channel Setup ////
-	ccUrl := url.URL{Scheme: "wss", Host: *controlChannel, Path: "/connect"}
+	ccUrl := url.URL{Scheme: "wss", Host: controlChannel, Path: "/connect"}
 	log.Printf("connecting control channel to %s", ccUrl.String())
 
 	cc, _, err := wssDialer.Dial(ccUrl.String(), nil)
@@ -113,7 +121,7 @@ func main() {
 	}()
 
 	//// Data Channel Setup ////
-	dcUrl := url.URL{Scheme: "wss", Host: *dataChannel, Path: "/data"}
+	dcUrl := url.URL{Scheme: "wss", Host: dataChannel, Path: "/data"}
 	log.Printf("connecting data channel to %s", dcUrl.String())
 
 	dcConn, _, err := wssDialer.Dial(dcUrl.String(), nil)
@@ -137,7 +145,7 @@ func main() {
 	}()
 
 	// UDP Listen
-	s, err := net.ResolveUDPAddr("udp4", udpPort)
+	s, err := net.ResolveUDPAddr("udp4", ":"+udpPort)
 	if err != nil {
 		fmt.Println(err)
 		return

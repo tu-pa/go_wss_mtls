@@ -19,3 +19,16 @@ type Response struct {
 	ReqId  string
 	Result string
 }
+
+type CertFiles struct {
+	RootPubKey string
+	PrivKey    string
+}
+
+type Config struct {
+	RemoteCtrlUrl   string
+	RemoteDataUrl   string
+	LocalServerPort string
+	LocalUdpPort    string
+	Certs           CertFiles
+}
