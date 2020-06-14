@@ -10,6 +10,7 @@ import (
 
 	"math/rand"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
@@ -23,7 +24,22 @@ import (
 // Default
 var controlChannel = "127.0.0.1:8442"
 var dataChannel = "127.0.0.1:8443"
-var udpPort = ":8444"
+var udpPort = "9444"
+var serverPort = "9445"
+var configFileName = "./client.conf"
+
+func config(w http.ResponseWriter, r *http.Request) {
+
+	fileData, err := ioutil.ReadFile(configFileName)
+	if err != nil {
+		log.Printf("failed to read config file")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(fileData)
+}
 
 func main() {
 	interrupt := make(chan os.Signal, 1)
@@ -32,14 +48,20 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 
 	// Read Configuration
-	file, _ := ioutil.ReadFile("./client.conf")
+	file, _ := ioutil.ReadFile(configFileName)
 	conf := common.Config{}
 	_ = json.Unmarshal([]byte(file), &conf)
 
-	udpPort = conf.LocalUdpPort
 	controlChannel = conf.RemoteCtrlUrl
 	dataChannel = conf.RemoteDataUrl
+	serverPort = conf.LocalServerPort
+	udpPort = conf.LocalUdpPort
 
+	go func() {
+		// Webserver to Modify Configuration
+		http.HandleFunc("/config", config)
+		http.ListenAndServe(":"+serverPort, nil)
+	}()
 	//// Secure Websocket Setup: 2-Way Auth ////
 	// Create a CA certificate pool and add cert.pem to it
 	caCert, err := ioutil.ReadFile(conf.Certs.RootPubKey)
@@ -76,7 +98,6 @@ func main() {
 	go func() {
 		defer close(done)
 		for {
-			// TODO - Server Control
 			_, message, err := cc.ReadMessage()
 			if err != nil {
 				log.Println(err)
@@ -104,6 +125,18 @@ func main() {
 				resp.Result = "ok"
 			} else if req.ReqId == common.Reqid_stop_service {
 				// TODO: systemctl stop clientService ?
+				resp.Result = "ok"
+			} else if req.ReqId == common.Reqid_snapshot {
+				// TODO: take a picture and upload to server ?
+				resp.Result = "ok"
+			} else if req.ReqId == common.Reqid_periodic_snapshot {
+				// TODO: configure perodic upload to server ?
+				resp.Result = "ok"
+			} else if req.ReqId == common.Reqid_reboot {
+				// TODO: reboot ?
+				resp.Result = "ok"
+			} else if req.ReqId == common.Reqid_provision {
+				// TODO: provision ?
 				resp.Result = "ok"
 			} else {
 				resp.Result = "unhandled event"

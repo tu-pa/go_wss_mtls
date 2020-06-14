@@ -239,6 +239,7 @@ func getAvailClients(pool *Pool, w http.ResponseWriter, r *http.Request) {
 
 	log.Println("Clients: ", m)
 
+	// local response only
 	json.NewEncoder(w).Encode(m)
 }
 
